@@ -11,6 +11,21 @@
 
 Rustクレート(rlib)としても、DLL/SO(cdylib)としても使える。
 
+## ビルド済みバイナリ(GitHub Releases)
+
+`main`ブランチへのpushがCI(fmt/build/test/clippy/bundled)を全て通過すると、そのコミットのビルド成果物が自動的に`build-<コミットハッシュ12桁>`というタグ名でGitHub Releaseとして公開される([Releases](../../releases)を参照)。ソースからビルドせずすぐに使いたい場合はここから取得できる。
+
+各リリースには以下のアセットが含まれる:
+
+| ファイル名 | 内容 |
+|---|---|
+| `ffmpeg-caster-<sha>-windows-x64.dll` | 通常版cdylib。ffmpegは`setup()`呼び出し時にネットワーク経由でダウンロードされる。 |
+| `ffmpeg-caster-<sha>-windows-x64-bundled.dll` | `bundled` feature有効版cdylib。ffmpegをビルド時に埋め込み済みで、実行時はネットワーク不要。サイズが大きい(ffmpeg本体を含むため)。 |
+| `ffmpeg_stub-<sha>-windows-x64.exe` | SYSTEM昇格キャプチャ用中継バイナリ単体。両DLLには既に埋め込まれているため通常は不要だが、独自ビルドと差し替えたい場合に使う。 |
+| `*.sha256.txt` | 対応するファイルのSHA256チェックサム(`sha256sum -c <ファイル名>.sha256.txt`で検証可能)。 |
+
+現時点はWindows x64ビルドのみ(Linux/macOSは`ffmpeg_stub`がWindows専用クレートに依存するためワークスペース全体のリリースビルドを流していない。ライブラリ本体は各OSでソースからビルド可能)。
+
 ## 想定利用フロー
 
 ```

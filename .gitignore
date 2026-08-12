@@ -12,3 +12,7 @@ Cargo.lock
 # bundled featureのビルドで自動ダウンロード・キャッシュされるffmpeg zip
 /assets/*.zip
 /assets/*.zip.partial
+
+# CIのreleaseジョブがローカルでステージングに使う一時ディレクトリ
+/dist/
+release-notes.md

@@ -91,3 +91,91 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --features bundled --verbose
+
+  # mainへのpushが上記の検証(fmt/build/test/clippy/bundled)を全て通過したら、
+  # そのコミットのビルド成果物をコミットハッシュ名のタグでGitHub Releaseとして
+  # 公開する。プルリクエストでは実行しない(pushイベントのみ)。
+  #
+  # 通常版(オンラインダウンロード)cdylib・bundled版(ffmpeg同梱)cdylib・
+  # ffmpeg_stub.exe単体をそれぞれ別アセットとして公開し、各ファイルに
+  # 対応する<ファイル名>.sha256.txt(`sha256sum`形式、`sha256sum -c`で検証可能)を
+  # 添付する。
+  release:
+    name: release (windows)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt, windows, unix, clippy, bundled]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Determine short SHA
+        id: vars
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 12)
+          echo "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Build online (network-download) variant
+        run: cargo build --release --verbose
+
+      - name: Stage online variant assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\release\ffmpeg_caster.dll "dist\ffmpeg-caster-${{ steps.vars.outputs.sha }}-windows-x64.dll"
+          Copy-Item target\release\ffmpeg_stub.exe "dist\ffmpeg_stub-${{ steps.vars.outputs.sha }}-windows-x64.exe"
+
+      - name: Clean before building bundled variant
+        run: cargo clean -p ffmpeg-caster --release
+
+      - name: Build bundled (ffmpeg embedded) variant
+        run: cargo build --release --features bundled --verbose
+
+      - name: Stage bundled variant assets
+        shell: pwsh
+        run: |
+          Copy-Item target\release\ffmpeg_caster.dll "dist\ffmpeg-caster-${{ steps.vars.outputs.sha }}-windows-x64-bundled.dll"
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          # sha256sum -c との互換性のため、改行はLF固定で書き出す(Out-Fileの
+          # 既定はCRLFになり、sha256sum側がファイル名の末尾に\rを含めて
+          # パースしてしまい検証に失敗する)。
+          Get-ChildItem dist -File | Where-Object { $_.Extension -ne ".txt" } | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+            $line = "$hash  $($_.Name)`n"
+            [System.IO.File]::WriteAllText("$($_.FullName).sha256.txt", $line, [System.Text.Encoding]::ASCII)
+          }
+
+      - name: List release assets
+        shell: pwsh
+        run: Get-ChildItem dist -File | Select-Object Name, Length
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          @"
+          Automated build from commit ${{ github.sha }}.
+
+          - ``*-windows-x64.dll`` / ``*-windows-x64.exe``: online variant, ffmpeg downloaded at runtime via ``setup()``.
+          - ``*-windows-x64-bundled.dll``: ffmpeg embedded at build time (``--features bundled``), no network needed at runtime.
+          - ``ffmpeg_stub-*``: standalone SYSTEM-elevation relay binary (already embedded in both DLLs; provided separately for manual placement if needed).
+          - Each asset has a matching ``*.sha256.txt`` (``sha256sum -c`` compatible).
+          "@ | Out-File -Encoding utf8 release-notes.md
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $sha = "${{ steps.vars.outputs.sha }}"
+          $tag = "build-$sha"
+          gh release create $tag (Get-ChildItem dist -File | ForEach-Object { $_.FullName }) `
+            --title "Build $sha" `
+            --notes-file release-notes.md `
+            --target "${{ github.sha }}"
