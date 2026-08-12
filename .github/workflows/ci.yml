@@ -19,57 +19,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Windowsのみ: ffmpeg_stub(windowsクレート依存、SYSTEM昇格中継バイナリ)を
-  # 含むワークスペース全体のビルド・テスト・cdylib生成を検証する。
-  # build.rsがビルド時にcargo build -p ffmpeg_stubをサブプロセス実行するため、
-  # ワークスペース全体を通しで動かせるのは実質Windowsだけ。
-  windows:
-    name: build & test (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo build (workspace)
-        run: cargo build --workspace --verbose
-      - name: cargo test
-        run: cargo test --verbose
-      - name: cargo build --release (cdylib)
-        run: cargo build --release --verbose
-      - name: cargo build --examples
-        run: cargo build --examples --verbose
-      - name: check cdylib exports
-        shell: pwsh
-        run: |
-          $dumpbin = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $dumpbin) { throw "dumpbin not found" }
-          $out = & $dumpbin.FullName /exports target\release\ffmpeg_caster.dll
-          $out | Select-String "ffmpeg_caster_"
-          if (-not ($out | Select-String "ffmpeg_caster_setup")) { throw "expected FFI exports not found in DLL" }
-
-  # Linux/macOS: クロスプラットフォーム分岐(display.rs/downloader.rs/
-  # pipeline.rsのcfg(not(windows))側)が壊れていないことを型検査レベルで
-  # 確認する。SYSTEM昇格(elevate.rs)・ffmpeg_stubはWindows専用のためno-opの
-  # コードパスのみが対象になる。実機での画面キャプチャ・ffmpeg実行までは
-  # CI環境(ヘッドレス、ディスプレイ無し)では検証できないため対象外。
-  unix:
-    name: build & test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo build (lib only; ffmpeg_stub workspace member is Windows-only)
-        run: cargo build --verbose
-      - name: cargo test
-        run: cargo test --verbose
-      - name: cargo build --release (cdylib)
-        run: cargo build --release --verbose
-
   clippy:
     name: clippy
     runs-on: windows-latest
@@ -81,36 +30,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # bundled featureは実際にffmpeg zipをダウンロード/埋め込みしてビルド完了まで
-  # 通ることだけを確認する(生成物の実行までは行わない)。
-  bundled:
-    name: bundled feature (windows)
+  # Windows: ffmpeg_stub(windowsクレート依存、SYSTEM昇格中継バイナリ)を含む
+  # ワークスペース全体のビルド・テストを行い、そのままonline版・bundled版の
+  # cdylibとffmpeg_stub.exeをビルドしてリリース資産としてuploadする。
+  # build.rsがビルド時にcargo build -p ffmpeg_stubをサブプロセス実行するため、
+  # ワークスペース全体を通しで動かせるのは実質Windowsだけ。
+  windows:
+    name: build & test (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --features bundled --verbose
 
-  # mainへのpushが上記の検証(fmt/build/test/clippy/bundled)を全て通過したら、
-  # そのコミットのビルド成果物をコミットハッシュ名のタグでGitHub Releaseとして
-  # 公開する。プルリクエストでは実行しない(pushイベントのみ)。
-  #
-  # 通常版(オンラインダウンロード)cdylib・bundled版(ffmpeg同梱)cdylib・
-  # ffmpeg_stub.exe単体をそれぞれ別アセットとして公開し、各ファイルに
-  # 対応する<ファイル名>.sha256.txt(`sha256sum`形式、`sha256sum -c`で検証可能)を
-  # 添付する。
-  release:
-    name: release (windows)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [fmt, windows, unix, clippy, bundled]
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (workspace)
+        run: cargo build --workspace --verbose
+      - name: cargo test
+        run: cargo test --verbose
+      - name: cargo build --examples
+        run: cargo build --examples --verbose
 
       - name: Determine short SHA
         id: vars
@@ -120,7 +58,16 @@ jobs:
           echo "sha=$sha" >> $env:GITHUB_OUTPUT
 
       - name: Build online (network-download) variant
-        run: cargo build --release --verbose
+        run: cargo build --release --workspace --verbose
+
+      - name: check cdylib exports
+        shell: pwsh
+        run: |
+          $dumpbin = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin not found" }
+          $out = & $dumpbin.FullName /exports target\release\ffmpeg_caster.dll
+          $out | Select-String "ffmpeg_caster_"
+          if (-not ($out | Select-String "ffmpeg_caster_setup")) { throw "expected FFI exports not found in DLL" }
 
       - name: Stage online variant assets
         shell: pwsh
@@ -128,9 +75,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\release\ffmpeg_caster.dll "dist\ffmpeg-caster-${{ steps.vars.outputs.sha }}-windows-x64.dll"
           Copy-Item target\release\ffmpeg_stub.exe "dist\ffmpeg_stub-${{ steps.vars.outputs.sha }}-windows-x64.exe"
-
-      - name: Clean before building bundled variant
-        run: cargo clean -p ffmpeg-caster --release
 
       - name: Build bundled (ffmpeg embedded) variant
         run: cargo build --release --features bundled --verbose
@@ -152,30 +96,143 @@ jobs:
             [System.IO.File]::WriteAllText("$($_.FullName).sha256.txt", $line, [System.Text.Encoding]::ASCII)
           }
 
-      - name: List release assets
+      - name: List staged assets
         shell: pwsh
         run: Get-ChildItem dist -File | Select-Object Name, Length
 
-      - name: Write release notes
-        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-windows
+          path: dist/*
+          if-no-files-found: error
+
+  # Linux/macOS: ライブラリ単体(ffmpeg_stubはWindows専用のためワークスペース
+  # 対象外)のビルド・テストを行い、online版・bundled版のcdylibをビルドして
+  # リリース資産としてuploadする。SYSTEM昇格(elevate.rs)はWindows専用のため
+  # no-opのコードパスのみが対象になる。実機での画面キャプチャ・ffmpeg実行
+  # まではCI環境(ヘッドレス、ディスプレイ無し)では検証できないため対象外。
+  unix:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_suffix: linux-x64
+            cdylib_ext: so
+          - os: macos-latest
+            asset_suffix: macos-arm64
+            cdylib_ext: dylib
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build (lib only; ffmpeg_stub workspace member is Windows-only)
+        run: cargo build --verbose
+      - name: cargo test
+        run: cargo test --verbose
+
+      - name: Determine short SHA
+        id: vars
+        run: echo "sha=$(echo ${{ github.sha }} | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Build online (network-download) variant
+        run: cargo build --release --verbose
+
+      - name: Stage online variant assets
         run: |
-          @"
+          mkdir -p dist
+          cp "target/release/libffmpeg_caster.${{ matrix.cdylib_ext }}" \
+             "dist/ffmpeg-caster-${{ steps.vars.outputs.sha }}-${{ matrix.asset_suffix }}.${{ matrix.cdylib_ext }}"
+
+      - name: Build bundled (ffmpeg embedded) variant
+        run: cargo build --release --features bundled --verbose
+
+      - name: Stage bundled variant assets
+        run: |
+          cp "target/release/libffmpeg_caster.${{ matrix.cdylib_ext }}" \
+             "dist/ffmpeg-caster-${{ steps.vars.outputs.sha }}-${{ matrix.asset_suffix }}-bundled.${{ matrix.cdylib_ext }}"
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          for f in *; do
+            case "$f" in
+              *.sha256.txt) continue ;;
+            esac
+            sha256sum "$f" > "$f.sha256.txt"
+          done
+
+      - name: List staged assets
+        run: ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  # bundled featureは実際にffmpeg zipをダウンロード/埋め込みしてビルド完了まで
+  # 通ることだけを確認する(生成物の実行までは行わない)。windows/unixジョブが
+  # 既にbundled版をビルドしているため、ここはPR時の早期フィードバック用に
+  # Windowsのみ軽量に維持する。
+  bundled:
+    name: bundled feature (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --features bundled --verbose
+
+  # mainへのpushが上記の検証(fmt/clippy/windows/unix/bundled)を全て通過したら、
+  # 各OSジョブが既にビルド済みの成果物(再ビルドはしない)をそのまま集めて、
+  # コミットハッシュ名のタグでGitHub Releaseとして公開する。
+  # プルリクエストでは実行しない(pushイベントのみ)。
+  release:
+    name: publish release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt, clippy, windows, unix, bundled]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -la dist/
+
+      - name: Determine short SHA
+        id: vars
+        run: echo "sha=$(echo ${{ github.sha }} | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
           Automated build from commit ${{ github.sha }}.
 
-          - ``*-windows-x64.dll`` / ``*-windows-x64.exe``: online variant, ffmpeg downloaded at runtime via ``setup()``.
-          - ``*-windows-x64-bundled.dll``: ffmpeg embedded at build time (``--features bundled``), no network needed at runtime.
-          - ``ffmpeg_stub-*``: standalone SYSTEM-elevation relay binary (already embedded in both DLLs; provided separately for manual placement if needed).
-          - Each asset has a matching ``*.sha256.txt`` (``sha256sum -c`` compatible).
-          "@ | Out-File -Encoding utf8 release-notes.md
+          - `*-windows-x64.dll` / `*-linux-x64.so` / `*-macos-arm64.dylib`: online variant, ffmpeg downloaded at runtime via `setup()`.
+          - `*-bundled.*`: ffmpeg embedded at build time (`--features bundled`), no network needed at runtime.
+          - `ffmpeg_stub-*`: standalone SYSTEM-elevation relay binary (Windows only; already embedded in both Windows DLLs, provided separately for manual placement if needed).
+          - Each asset has a matching `*.sha256.txt` (`sha256sum -c` compatible).
+          EOF
 
       - name: Create tag and GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
         run: |
-          $sha = "${{ steps.vars.outputs.sha }}"
-          $tag = "build-$sha"
-          gh release create $tag (Get-ChildItem dist -File | ForEach-Object { $_.FullName }) `
-            --title "Build $sha" `
-            --notes-file release-notes.md `
+          sha="${{ steps.vars.outputs.sha }}"
+          tag="build-$sha"
+          gh release create "$tag" dist/* \
+            --title "Build $sha" \
+            --notes-file release-notes.md \
             --target "${{ github.sha }}"
