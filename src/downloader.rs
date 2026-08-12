@@ -69,10 +69,26 @@ fn find_ffmpeg_binary(dest_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// GitHub APIへの未認証リクエストはIP単位で60req/hしか許容されず、CI環境や
+/// NAT越しの共有IPだとすぐに枯渇して`403`になることがある。`GITHUB_TOKEN`/
+/// `GH_TOKEN`環境変数が設定されていれば`Authorization`ヘッダーを付与し、
+/// 認証済みリクエスト(5000req/h)にする。設定が無ければ従来通り未認証で試行する
+/// (ライブラリ利用者に環境変数の用意を強制しないため、無くても動作は変わらない)。
+fn github_token() -> Option<String> {
+    env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| env::var("GH_TOKEN").ok())
+        .filter(|t| !t.is_empty())
+}
+
 fn fetch_latest_release() -> Result<Release> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = ureq::get(&url)
-        .set("User-Agent", "ffmpeg-caster")
+    let req = ureq::get(&url).set("User-Agent", "ffmpeg-caster");
+    let req = match github_token() {
+        Some(token) => req.set("Authorization", &format!("Bearer {token}")),
+        None => req,
+    };
+    let response = req
         .call()
         .map_err(|e| format!("GitHub API request failed: {e}"))?;
     response

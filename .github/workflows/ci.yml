@@ -7,6 +7,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # bundled featureのビルド(build.rs)・downloader.rsの実行時ダウンロードが
+  # GitHub APIを未認証で叩くと共有ランナーIPのレート制限(60req/h)に
+  # 引っかかりやすい(実際にmacOSランナーで403発生)。全ジョブ・全ステップに
+  # GITHUB_TOKENを渡し、build.rs/downloader.rs側でAuthorizationヘッダーとして
+  # 使わせることで認証済みリクエスト(5000req/h)にする。
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   fmt:

@@ -149,10 +149,32 @@ fn main() {
     });
 }
 
+/// GitHub API/Releasesへの未認証リクエストはIP単位で60req/hしか許容されず、
+/// GitHub Actionsの共有ランナーIPは他のワークフローと共有されているため
+/// すぐに枯渇し`403`(レート制限)になることがある(実際にmacOSランナーで
+/// 発生)。`GITHUB_TOKEN`/`GH_TOKEN`環境変数が設定されていれば`Authorization`
+/// ヘッダーを付与し、認証済みリクエスト(5000req/h、実質枯渇しない上限)に
+/// する。CI(.github/workflows/ci.yml)がbundledビルドのステップに
+/// `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`を渡す前提。ローカルビルドで
+/// この環境変数が無い場合は従来通り未認証で試行する。
+fn github_token() -> Option<String> {
+    env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| env::var("GH_TOKEN").ok())
+        .filter(|t| !t.is_empty())
+}
+
+fn authed_get(url: &str) -> ureq::Request {
+    let req = ureq::get(url).set("User-Agent", "ffmpeg-caster-build-rs");
+    match github_token() {
+        Some(token) => req.set("Authorization", &format!("Bearer {token}")),
+        None => req,
+    }
+}
+
 fn download_and_cache(asset_name: &str, assets_dir: &Path, dest: &Path) -> Result<(), String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = ureq::get(&url)
-        .set("User-Agent", "ffmpeg-caster-build-rs")
+    let response = authed_get(&url)
         .call()
         .map_err(|e| format!("GitHub API request failed: {e}"))?;
     let release: Release = response
@@ -169,6 +191,11 @@ fn download_and_cache(asset_name: &str, assets_dir: &Path, dest: &Path) -> Resul
         .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
 
     let tmp_dest: PathBuf = dest.with_extension("zip.partial");
+    // browser_download_urlはGitHub Releasesのアセット直接ダウンロードURLで、
+    // api.github.comではないためAuthorizationヘッダーは不要(ureq/リダイレクト
+    // 越しに漏れても実害はないがそもそも認証チェックされないエンドポイント)。
+    // ただしAPIリクエスト自体のレート制限とは別カウントのため、ここは常に
+    // 未認証のままでよい。
     let response = ureq::get(&asset.browser_download_url)
         .set("User-Agent", "ffmpeg-caster-build-rs")
         .call()
