@@ -1,0 +1,14 @@
+/target
+Cargo.lock
+
+# 実行時にダウンロード/展開される外部バイナリ(setup()やexamplesの実行で生成される)
+/tools/
+*.exe
+*.pdb
+*.dll
+*.so
+*.dylib
+
+# bundled featureのビルドで自動ダウンロード・キャッシュされるffmpeg zip
+/assets/*.zip
+/assets/*.zip.partial

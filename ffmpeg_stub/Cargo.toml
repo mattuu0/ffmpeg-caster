@@ -1,0 +1,15 @@
+[package]
+name = "ffmpeg_stub"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ffmpeg_stub"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

@@ -1,0 +1,66 @@
+[workspace]
+members = [".", "ffmpeg_stub"]
+resolver = "2"
+
+[package]
+name = "ffmpeg-caster"
+version = "0.1.0"
+edition = "2021"
+description = "Reusable screen-capture + ffmpeg encoding pipeline extracted from rust-cast"
+
+[lib]
+name = "ffmpeg_caster"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+bundled = []
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "process", "net", "sync", "time", "io-util", "macros"] }
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+thiserror = "1"
+
+[build-dependencies]
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+] }
+
+[dev-dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# DLL/SO配布物のサイズを削るためのリリースプロファイル調整。
+# strip: デバッグシンボルを除去(pdb/dSYM相当がバイナリ本体から分離される)。
+# lto: リンク時最適化で未使用コードの削除を強化する。
+# codegen-units=1: LTOの効果を最大化する(ビルド時間は伸びる)。
+# panic=abort: パニック時のスタック巻き戻しコードを除去する(cdylib配布物では
+# パニックはプロセスクラッシュとして扱う想定なので許容できる)。
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
+
+[[example]]
+name = "capture_and_encode"
+path = "examples/capture_and_encode.rs"
+
+[[example]]
+name = "system_elevated_capture"
+path = "examples/system_elevated_capture.rs"
+
+[[example]]
+name = "multi_subscriber"
+path = "examples/multi_subscriber.rs"

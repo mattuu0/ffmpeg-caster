@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Windowsのみ: ffmpeg_stub(windowsクレート依存、SYSTEM昇格中継バイナリ)を
+  # 含むワークスペース全体のビルド・テスト・cdylib生成を検証する。
+  # build.rsがビルド時にcargo build -p ffmpeg_stubをサブプロセス実行するため、
+  # ワークスペース全体を通しで動かせるのは実質Windowsだけ。
+  windows:
+    name: build & test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (workspace)
+        run: cargo build --workspace --verbose
+      - name: cargo test
+        run: cargo test --verbose
+      - name: cargo build --release (cdylib)
+        run: cargo build --release --verbose
+      - name: cargo build --examples
+        run: cargo build --examples --verbose
+      - name: check cdylib exports
+        shell: pwsh
+        run: |
+          $dumpbin = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin not found" }
+          $out = & $dumpbin.FullName /exports target\release\ffmpeg_caster.dll
+          $out | Select-String "ffmpeg_caster_"
+          if (-not ($out | Select-String "ffmpeg_caster_setup")) { throw "expected FFI exports not found in DLL" }
+
+  # Linux/macOS: クロスプラットフォーム分岐(display.rs/downloader.rs/
+  # pipeline.rsのcfg(not(windows))側)が壊れていないことを型検査レベルで
+  # 確認する。SYSTEM昇格(elevate.rs)・ffmpeg_stubはWindows専用のためno-opの
+  # コードパスのみが対象になる。実機での画面キャプチャ・ffmpeg実行までは
+  # CI環境(ヘッドレス、ディスプレイ無し)では検証できないため対象外。
+  unix:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (lib only; ffmpeg_stub workspace member is Windows-only)
+        run: cargo build --verbose
+      - name: cargo test
+        run: cargo test --verbose
+      - name: cargo build --release (cdylib)
+        run: cargo build --release --verbose
+
+  clippy:
+    name: clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # bundled featureは実際にffmpeg zipをダウンロード/埋め込みしてビルド完了まで
+  # 通ることだけを確認する(生成物の実行までは行わない)。
+  bundled:
+    name: bundled feature (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --features bundled --verbose
